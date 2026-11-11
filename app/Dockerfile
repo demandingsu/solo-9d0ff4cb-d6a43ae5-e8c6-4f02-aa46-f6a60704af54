@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    INTAKE_DB_PATH=/data/intake.db \
+    MAX_LIST_PAGES=50 \
+    MAX_DETAIL_PAGES=500
 
 WORKDIR /srv/app
 
@@ -9,6 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+RUN mkdir -p /data
 
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \

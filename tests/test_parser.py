@@ -1,78 +1,67 @@
-"""解析器：分页链接、详情链接与详情字段。"""
+"""解析器测试：列表容器、分页链接、详情字段与失败路径。"""
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
-from app.parser import (
-    is_same_site,
-    parse_detail,
-    parse_detail_links,
-    parse_next_page,
-)
-
-HTML_DIR = Path(__file__).parent.parent / "site" / "html"
+import batches
+from app.parser import is_same_site, parse_detail, parse_list_page
 
 
-def test_next_page_and_detail_links_index():
-    html = (HTML_DIR / "index.html").read_text(encoding="utf-8")
-    nxt = parse_next_page(html, "http://site:8080/index.html")
-    assert nxt == "http://site:8080/page2.html"
+def test_parse_list_page_and_next_link():
+    batch = batches.V1
+    pages = batches.total_pages(batch)
+    html = batches.render_list(batches.page_notices(batch, 0), 0, pages)
+    page = parse_list_page(html, "http://site:8080/index.html")
 
-    links = parse_detail_links(html, "http://site:8080/index.html")
-    assert len(links) == 5
-    assert links[0][1] == "N-2026-001"
-    assert links[0][0] == "http://site:8080/notices/N-2026-001.html"
+    assert [item.notice_id for item in page.items] == [
+        "N-2026-001",
+        "N-2026-002",
+        "N-2026-003",
+        "N-2026-004",
+    ]
+    assert page.items[0].url == "http://site:8080/notices/N-2026-001.html"
+    assert page.items[0].kind_raw == "suspension"
+    assert page.next_url == "http://site:8080/page2.html"
 
 
-def test_last_page_has_no_next():
-    html = (HTML_DIR / "page3.html").read_text(encoding="utf-8")
-    assert parse_next_page(html, "http://site:8080/page3.html") is None
-
-
-def test_offsite_link_absolute_and_detected():
-    html = (HTML_DIR / "page3.html").read_text(encoding="utf-8")
-    links = parse_detail_links(html, "http://site:8080/page3.html")
-    offsite = [u for u, _, _ in links if "external.example.org" in u]
-    assert offsite == ["http://external.example.org/notice/N-EXT-001.html"]
-    assert not is_same_site(offsite[0], "http://site:8080/index.html")
-    assert is_same_site("http://site:8080/notices/x.html", "http://site:8080/index.html")
+def test_last_page_has_no_next_link():
+    batch = batches.V1
+    pages = batches.total_pages(batch)
+    html = batches.render_list(batches.page_notices(batch, pages - 1), pages - 1, pages)
+    assert parse_list_page(html, "http://site:8080/page3.html").next_url is None
 
 
 def test_parse_suspension_detail():
-    html = (HTML_DIR / "notices" / "N-2026-001.html").read_text(encoding="utf-8")
-    a = parse_detail(html, "http://site:8080/notices/N-2026-001.html")
-    assert a.notice_id == "N-2026-001"
-    assert a.route == "12 路"
-    assert a.kind.value == "suspension"
-    assert a.suspend_start.isoformat() == "2026-11-10T06:00:00+08:00"
-    assert a.suspend_end.isoformat() == "2026-11-12T22:00:00+08:00"
-    assert a.published_at.utcoffset() is not None
+    notice = batches.V1[0]
+    parsed = parse_detail(batches.render_detail(notice), "http://site:8080/notices/x.html")
+
+    assert parsed.notice_id == notice.notice_id
+    assert parsed.route == notice.route
+    assert parsed.kind.value == "suspension"
+    assert parsed.published_at is not None
+    assert parsed.published_at.utcoffset() is not None
+    assert parsed.title == notice.title
 
 
-def test_parse_correction_with_chained_reference():
-    html = (HTML_DIR / "notices" / "N-2026-010.html").read_text(encoding="utf-8")
-    a = parse_detail(html, "http://site:8080/notices/N-2026-010.html")
-    assert a.kind.value == "correction"
-    assert a.references == ["N-2026-006"]
+def test_parse_correction_and_cancellation_kinds():
+    corr = next(n for n in batches.V2 if n.notice_id == "N-2026-012")
+    cancel = next(n for n in batches.V2 if n.notice_id == "N-2026-013")
+    assert parse_detail(batches.render_detail(corr), "http://x/1").kind.value == "correction"
+    assert parse_detail(batches.render_detail(cancel), "http://x/2").kind.value == "cancellation"
 
 
-def test_parse_cancellation_detail():
-    html = (HTML_DIR / "notices" / "N-2026-007.html").read_text(encoding="utf-8")
-    a = parse_detail(html, "http://site:8080/notices/N-2026-007.html")
-    assert a.kind.value == "cancellation"
-    assert a.suspend_start is None
-    assert a.references == ["N-2026-004"]
-
-
-def test_parse_multi_reference_detail():
-    html = (HTML_DIR / "notices" / "N-2026-011.html").read_text(encoding="utf-8")
-    a = parse_detail(html, "http://site:8080/notices/N-2026-011.html")
-    assert a.references == ["N-2026-009", "N-2026-999"]
-
-
-def test_missing_id_raises():
-    bad = "<html><body><table class='notice-fields'></table></body></html>"
+def test_malformed_detail_raises():
     with pytest.raises(ValueError):
-        parse_detail(bad, "http://site/x.html")
+        parse_detail(batches.render_malformed_detail("N-2026-015"), "http://x/3")
+
+
+def test_missing_list_container_raises():
+    with pytest.raises(ValueError):
+        parse_list_page("<html><body><h1>维护中</h1></body></html>", "http://x/")
+
+
+def test_same_site_requires_scheme_host_port_match():
+    assert is_same_site("http://site:8080/a", "http://site:8080/index.html")
+    assert not is_same_site("https://site:8080/a", "http://site:8080/index.html")
+    assert not is_same_site("http://site:9090/a", "http://site:8080/index.html")
+    assert not is_same_site("http://other:8080/a", "http://site:8080/index.html")

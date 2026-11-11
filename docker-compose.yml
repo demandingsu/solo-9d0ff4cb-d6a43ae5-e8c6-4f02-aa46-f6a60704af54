@@ -1,26 +1,31 @@
 services:
   notice-site:
     build: ./site
-    container_name: bus-notice-site
     ports:
       - "8080:8080"
     networks:
-      - busnet
+      - notice-net
 
   api:
     build: ./app
-    container_name: bus-notice-api
     ports:
       - "8000:8000"
     environment:
-      # API 通过容器网络访问示例站点；同站判定以此主机名为基准
-      NOTICE_SITE_URL: http://notice-site:8080/index.html
+      # API 通过 Compose 网络访问示例站；站点身份按 协议+主机+端口 归一化
+      INTAKE_DB_PATH: /data/intake.db
+      MAX_LIST_PAGES: "50"
+      MAX_DETAIL_PAGES: "500"
+    volumes:
+      - intake-data:/data
     depends_on:
       notice-site:
         condition: service_healthy
     networks:
-      - busnet
+      - notice-net
+
+volumes:
+  intake-data:
 
 networks:
-  busnet:
+  notice-net:
     driver: bridge
